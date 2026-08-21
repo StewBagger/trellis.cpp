@@ -1,5 +1,6 @@
 // Flow-DiT runner (dense grid or sparse voxel) + FlowEuler guidance-interval sampler.
 #pragma once
+#include <memory>
 #include <vector>
 #include <array>
 #include <functional>
@@ -14,6 +15,7 @@ typedef struct ggml_gallocr* ggml_gallocr_t;
 
 namespace trellis {
 struct Model;
+class GraphExec;
 
 struct SamplerParams {
     int   steps             = 12;
@@ -38,11 +40,14 @@ public:
     int N() const { return N_; }
 private:
     const Model& m_; DiTParams p_; int N_, Lc_;
-    ggml_context* ctx_ = nullptr; ggml_cgraph* g_ = nullptr; ggml_gallocr_t alloc_ = nullptr;
+    ggml_context* ctx_ = nullptr; ggml_cgraph* g_ = nullptr;
+    // Owns graph allocation and execution for both direct and scheduled backends.
+    std::unique_ptr<GraphExec> exec_;
     ggml_tensor *gh0_, *gtf_, *gcond_, *gcos_, *gsin_, *gout_;
     std::vector<float> rcos_, rsin_;   // re-uploaded each forward (gallocr may reuse input buffers)
     std::map<std::string, ggml_tensor*> inter_;   // [dbg] named intermediates for NaN localization
     bool dbg_nan_ = false, dbg_done_ = false;
+    int  n_fwd_ = 0;
 };
 
 // Dense factory: RoPE from R^3 grid (ij meshgrid, z fastest). N = R^3.

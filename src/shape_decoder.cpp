@@ -1,4 +1,6 @@
 #include "shape_decoder.h"
+#include "trellis_debug.h"
+#include "trellis_sched.h"
 #include "sparse.h"
 #include "trellis_model.h"
 #include "ggml.h"
@@ -36,16 +38,15 @@ static std::vector<float> run1(const Model& m, ggml_context* c, T* out,
     ggml_set_output(out);
     ggml_cgraph* g = ggml_new_graph_custom(c, kGraphNodes, false);
     ggml_build_forward_expand(g, out);
-    ggml_gallocr_t a = ggml_gallocr_new(ggml_backend_get_default_buffer_type(m.backend));
-    if (!ggml_gallocr_alloc_graph(a, g)) throw std::runtime_error("shape_dec alloc");
+    trellis::GraphExec ex(m);
+    if (!ex.alloc(g)) throw std::runtime_error("shape_dec alloc");
     if (getenv("TRELLIS_DBG_ALLOC"))
         fprintf(stderr, "      [stage-alloc] nodes=%d  gallocr buffer = %.2f GB\n",
-                ggml_graph_n_nodes(g), ggml_gallocr_get_buffer_size(a, 0) / 1e9);
+                ggml_graph_n_nodes(g), ex.buffer_size() / 1e9);
     for (auto& [t, d] : ins) ggml_backend_tensor_set(t, d, 0, ggml_nbytes(t));
-    if (ggml_backend_graph_compute(m.backend, g) != GGML_STATUS_SUCCESS) throw std::runtime_error("shape_dec compute");
+    if (ex.compute(g, "shape_decode") != GGML_STATUS_SUCCESS) throw std::runtime_error("shape_dec compute");
     mem_probe("run1 computed (pre-readback)");
     std::vector<float> r = tensor_to_f32(out);
-    ggml_gallocr_free(a);
     mem_probe("run1 freed (post-readback)");
     return r;
 }

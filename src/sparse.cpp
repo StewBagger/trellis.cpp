@@ -1,5 +1,7 @@
 #include "sparse.h"
 #include "trellis_model.h"
+#include "trellis_debug.h"
+#include "trellis_sched.h"
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-alloc.h"
@@ -144,12 +146,12 @@ namespace {
 // RAM for structs only (~370 B each), so budget generously rather than risk GGML_ASSERT.
 static constexpr size_t kGraphNodes = 65536;
 struct GraphRun {
-    const Model& m; ggml_context* c; ggml_gallocr_t alloc = nullptr;
-    GraphRun(const Model& mm) : m(mm) {
+    const Model& m; ggml_context* c; trellis::GraphExec ex;
+    GraphRun(const Model& mm) : m(mm), ex(mm) {
         size_t meta = ggml_tensor_overhead() * kGraphNodes + ggml_graph_overhead_custom(kGraphNodes, false) + (1 << 20);
         c = ggml_init({ meta, nullptr, true });
     }
-    ~GraphRun() { if (alloc) ggml_gallocr_free(alloc); ggml_free(c); }
+    ~GraphRun() { ggml_free(c); }
     // `roots` are extra nodes to expand: writes into a preallocated `out` via ggml_cpy are
     // not reachable from `out` itself (nothing produces it), so they must be rooted explicitly.
     std::vector<float> run(ggml_tensor* out, const std::vector<std::pair<ggml_tensor*, const void*>>& inputs,
@@ -158,13 +160,12 @@ struct GraphRun {
         ggml_cgraph* g = ggml_new_graph_custom(c, kGraphNodes, false);
         for (ggml_tensor* r : roots) ggml_build_forward_expand(g, r);
         ggml_build_forward_expand(g, out);
-        alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(m.backend));
-        if (!ggml_gallocr_alloc_graph(alloc, g)) throw std::runtime_error("c2s: alloc failed");
+        if (!ex.alloc(g)) throw std::runtime_error("c2s: alloc failed");
         if (getenv("TRELLIS_DBG_ALLOC"))
             fprintf(stderr, "      [c2s-alloc] nodes=%d  gallocr buffer = %.2f GB\n",
-                    ggml_graph_n_nodes(g), ggml_gallocr_get_buffer_size(alloc, 0) / 1e9);
+                    ggml_graph_n_nodes(g), ex.buffer_size() / 1e9);
         for (auto& [t, data] : inputs) ggml_backend_tensor_set(t, data, 0, ggml_nbytes(t));
-        if (ggml_backend_graph_compute(m.backend, g) != GGML_STATUS_SUCCESS) throw std::runtime_error("c2s: compute failed");
+        if (ex.compute(g, "sparse.c2s") != GGML_STATUS_SUCCESS) throw std::runtime_error("c2s: compute failed");
         return tensor_to_f32(out);
     }
 };

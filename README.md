@@ -118,6 +118,13 @@ The most useful ones:
 | `--atlas PX` | UV atlas size (default 2048 @1024 / 1024 @512) |
 | `--box-uv` | voxel-native 6-way box projection instead of the default xatlas unwrap (O(faces), faster, looser packing) |
 | `--seed N` | RNG seed |
+| `--steps N` | flow sampler steps (default 12; lower values are useful for backend bring-up) |
+| `--backend NAME` | select a registered ggml backend explicitly, such as `HTP`, `Vulkan`, or `CPU` |
+| `--threads N` | CPU threads (defaults to the detected hardware thread count) |
+| `--sched on\|off` | enable multi-backend scheduling; automatic for the partial-coverage HTP backend |
+| `--vulkan-fallback` | with HTP, try Vulkan before the CPU for unsupported operations |
+| `--fa-fast` / `--fa-f32` | select fast F16 or BF16/F32 FlashAttention accumulation |
+| `--verbose` | graph timings and progress heartbeats for long-running stages |
 | `--require-gpu` | fail instead of falling back to the (very slow, RAM-hungry) CPU path |
 
 The postprocess matches the reference pipeline op for op (see
@@ -132,8 +139,8 @@ inpaint port, and exported as a GLB with smooth normals and **lossy-WebP texture
 (`EXT_texture_webp`; PNG fallback when built with `-DTRELLIS_WEBP=OFF`). Output
 quality is at parity with the reference CUDA postprocess on identical inputs.
 
-`TRELLIS_DBG_*` environment variables toggle developer debug logging only; no
-behavior-driving environment variables remain — use the flags above.
+Prefer the CLI flags above. The corresponding `TRELLIS_*` environment variables remain
+available for test binaries and backwards-compatible automation.
 
 ### trellis-server
 
@@ -193,7 +200,10 @@ The 1024 cascade runs on a 16 GB card thanks to **FlashAttention with padded K/V
 the sparse-structure stage, and at the HR token count (≈53k) ggml's tiled FA NaN'd on
 the unpadded last key-tile — zero-padding K/V to a 256 multiple + BF16 fixes both.
 f16 compute is the default and matches torch (`--f32` forces f32; `--no-fa` restores
-the plain-softmax path for A/B testing).
+the plain-softmax path for A/B testing). On the Qualcomm HTP backend, FlashAttention
+defaults to F16 K/V and fast accumulation after a 12-step quality gate showed a 3.53x
+end-to-end speedup with identical sparse voxels; `--fa-f32` restores BF16 K/V + F32
+accumulation. Other backends retain BF16/F32 by default (`--fa-fast` forces the HTP mode).
 
 Every neural component is validated against PyTorch (the `trellis-test-*` binaries +
 `tools/ref_*.py`): SS sampler matches torch to rel 4.3e-3 (exact voxel match), DiT
@@ -263,6 +273,27 @@ See `.github/workflows/release.yml` for the exact flags the release binaries use
 `cuda12` variant built with CUDA 12.9 for Pascal/Volta GPUs (compute capability
 6.0/6.1/7.0); the standalone installers select it automatically for devices such
 as the Tesla P100.
+
+### Windows ARM64 and Qualcomm HTP
+
+The native ARM64 helper configures clang for Windows-on-ARM and can build CPU, Vulkan,
+or Hexagon variants:
+
+```powershell
+scripts\build-arm64.ps1 -Backend cpu
+scripts\build-arm64.ps1 -Backend vulkan
+scripts\build-arm64.ps1 -Backend hexagon -HexagonSdk C:\Qualcomm\Hexagon_SDK\6.4.0.0
+```
+
+List registered devices with `trellis-devices --init`. A typical NPU run uses:
+
+```powershell
+build-arm64-hexagon\trellis-cli.exe input.png output.glb `
+  --models models\q4 --backend HTP --sched on --verbose
+```
+
+Add `--vulkan-fallback` when the same build includes Vulkan and unsupported HTP operations
+should prefer the GPU over the CPU.
 
 ## Layout
 

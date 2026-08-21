@@ -89,6 +89,8 @@ endif()
 
 # --- core library ----------------------------------------------------------
 add_library(trellis_core STATIC
+  src/trellis_debug.cpp
+  src/trellis_sched.cpp
   src/trellis_model.cpp
   src/dit.cpp
   src/flow_runner.cpp
@@ -262,6 +264,10 @@ target_compile_definitions(trellis_core PRIVATE TRELLIS_BUILD_BACKEND="${TRELLIS
 add_executable(trellis-smoke src/smoke_test.cpp)
 target_link_libraries(trellis-smoke PRIVATE trellis_core)
 set_target_properties(trellis-smoke PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
+add_executable(trellis-devices src/list_devices.cpp)
+target_link_libraries(trellis-devices PRIVATE trellis_core)
+set_target_properties(trellis-devices PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 
 add_executable(trellis-decode-replay src/decode_replay.cpp)
 target_link_libraries(trellis-decode-replay PRIVATE trellis_core)
