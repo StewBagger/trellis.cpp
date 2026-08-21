@@ -142,11 +142,27 @@ switch ($Backend) {
             throw "Hexagon SDK path not given. Pass -HexagonSdk <path> or set HEXAGON_SDK_ROOT."
         }
         if (-not (Test-Path $HexagonSdk)) { throw "Hexagon SDK not found at: $HexagonSdk" }
+
+        # The trimmed Windows-on-Snapdragon SDK records the compiler path in
+        # hexagon_sdk.json. The SDK's top-level CMake also expects PREBUILT_LIB_DIR
+        # before ggml configures its per-DSP external projects.
+        $sdkConfig = Join-Path $HexagonSdk 'hexagon_sdk.json'
+        if (-not (Test-Path $sdkConfig)) { throw "hexagon_sdk.json not found under: $HexagonSdk" }
+        $sdkMetadata = Get-Content -LiteralPath $sdkConfig -Raw | ConvertFrom-Json
+        $toolsInfo = $sdkMetadata.root.tools.info |
+                     Where-Object name -EQ 'Hexagon Tools' |
+                     Select-Object -First 1
+        if (-not $toolsInfo.path) { throw "Hexagon Tools path not found in: $sdkConfig" }
+        $hexagonTools = Join-Path $HexagonSdk $toolsInfo.path
+        if (-not (Test-Path $hexagonTools)) { throw "Hexagon Tools not found at: $hexagonTools" }
+
         # Vulkan alongside Hexagon: ops the NPU cannot take fall back to Adreno
         # rather than all the way to the CPU.
         if ($env:VULKAN_SDK) { $cmakeArgs += '-DGGML_VULKAN=ON' }
         $cmakeArgs += '-DGGML_HEXAGON=ON'
         $cmakeArgs += "-DHEXAGON_SDK_ROOT=$($HexagonSdk -replace '\\','/')"
+        $cmakeArgs += "-DHEXAGON_TOOLS_ROOT=$($hexagonTools -replace '\\','/')"
+        $cmakeArgs += '-DPREBUILT_LIB_DIR=toolv19_v81'
     }
 }
 

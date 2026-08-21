@@ -277,13 +277,21 @@ as the Tesla P100.
 ### Windows ARM64 and Qualcomm HTP
 
 The native ARM64 helper configures clang for Windows-on-ARM and can build CPU, Vulkan,
-or Hexagon variants:
+or Hexagon variants. For HTP, install the Hexagon SDK using the official
+[llama.cpp Windows Snapdragon guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/windows.md).
+The trimmed `hexagon-sdk-v6.6.0.0-arm64-wos.tar.xz` package described there is sufficient;
+extract it anywhere and pass the directory containing `hexagon_sdk.json` to
+`-HexagonSdk`:
 
 ```powershell
 scripts\build-arm64.ps1 -Backend cpu
 scripts\build-arm64.ps1 -Backend vulkan
-scripts\build-arm64.ps1 -Backend hexagon -HexagonSdk C:\Qualcomm\Hexagon_SDK\6.4.0.0
+scripts\build-arm64.ps1 -Backend hexagon -HexagonSdk C:\Qualcomm\Hexagon_SDK\6.6.0.0
 ```
+
+Windows requires the generated HTP Ops libraries and catalog to be signed with a trusted
+certificate before the NPU driver will load them. The linked guide documents the required
+driver, certificate, test-signing, and `HEXAGON_HTP_CERT` setup.
 
 List registered devices with `trellis-devices --init`. A typical NPU run uses:
 

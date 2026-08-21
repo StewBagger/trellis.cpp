@@ -1,10 +1,4 @@
-// trellis-devices -- enumerate every ggml backend device this build can see.
-//
-// Added for the ARM64/Hexagon port: model selection in trellis_model.cpp picks a
-// device by scanning for GPU/IGPU types and keeping the one with the most reported
-// memory. On Snapdragon both Adreno (Vulkan) and the Hexagon NPU register as
-// GGML_BACKEND_DEVICE_TYPE_GPU, so knowing exactly what is registered -- and in what
-// order, with what memory -- is a prerequisite for choosing between them.
+// Enumerate registered ggml devices and optionally initialize them.
 
 #include "ggml-backend.h"
 
@@ -29,6 +23,7 @@ static double to_mib(size_t bytes) {
 
 int main(int argc, char** argv) {
     const bool probe = (argc > 1 && std::string_view(argv[1]) == "--init");
+    bool init_failed = false;
 
     printf("registered backends: %zu\n", ggml_backend_reg_count());
     for (size_t i = 0; i < ggml_backend_reg_count(); ++i) {
@@ -42,6 +37,11 @@ int main(int argc, char** argv) {
 
     for (size_t i = 0; i < n; ++i) {
         ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        if (!d) {
+            printf("\n  device %zu\n    unavailable (backend initialization failed)\n", i);
+            init_failed = true;
+            continue;
+        }
 
         ggml_backend_dev_props p{};
         ggml_backend_dev_get_props(d, &p);
@@ -66,6 +66,7 @@ int main(int argc, char** argv) {
                 ggml_backend_free(b);
             } else {
                 printf("    init        : FAILED\n");
+                init_failed = true;
             }
         }
     }
@@ -73,5 +74,5 @@ int main(int argc, char** argv) {
     if (!probe) {
         printf("\n(pass --init to also try bringing each device up)\n");
     }
-    return 0;
+    return init_failed ? 1 : 0;
 }
