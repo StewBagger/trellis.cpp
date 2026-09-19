@@ -9,6 +9,9 @@
 //
 //   trellis-test-pixal3d
 #include "pixal3d.h"
+#include "trellis_args.h"
+#include <limits>
+#include <stdexcept>
 
 #include <cmath>
 #include <cstdio>
@@ -80,6 +83,24 @@ int main() {
             }
         }
     }
+
+    for (float scale : {0.0f, -1.0f, std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::quiet_NaN()}) {
+        try { (void)trellis::pixal3d_camera((float)CAX, scale); ++bad; }
+        catch (const std::invalid_argument&) {}
+    }
+    trellis::TrellisParams params;
+    std::string error;
+    for (const char* value : {"", "0", "-1", "nan", "inf", "1e100", "2junk"}) {
+        if (trellis::parse_camera_arg("mesh-scale", value, params, error)) ++bad;
+        if (trellis::parse_camera_arg("fov", value, params, error)) ++bad;
+    }
+    if (trellis::parse_camera_arg("fov", "180", params, error)) ++bad;
+    for (const char* value : {"-1", "1.5", "nan", "2147483648", "bad"})
+        if (trellis::parse_camera_arg("extend-pixel", value, params, error)) ++bad;
+    if (!trellis::parse_camera_arg("mesh-scale", "1.5", params, error) || params.mesh_scale != 1.5f) ++bad;
+    if (!trellis::parse_camera_arg("fov", "49.13", params, error)) ++bad;
+    if (!trellis::parse_camera_arg("extend-pixel", "0", params, error)) ++bad;
 
     printf(bad ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", bad);
     return bad ? 1 : 0;

@@ -349,7 +349,7 @@ add_executable(trellis-test-shape-dec src/test_shape_dec.cpp)
 target_link_libraries(trellis-test-shape-dec PRIVATE trellis_core)
 set_target_properties(trellis-test-shape-dec PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 
-add_executable(trellis-test-pixal3d src/test_pixal3d.cpp)
+add_executable(trellis-test-pixal3d src/test_pixal3d.cpp src/trellis_args.cpp)
 target_link_libraries(trellis-test-pixal3d PRIVATE trellis_core)
 set_target_properties(trellis-test-pixal3d PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 

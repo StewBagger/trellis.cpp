@@ -1,11 +1,38 @@
 #include "trellis_args.h"
 
+#include <cerrno>
+#include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 
 namespace trellis {
+
+bool parse_camera_arg(const std::string& name, const char* value, TrellisParams& p, std::string& error) {
+    char* end = nullptr;
+    errno = 0;
+    if (name == "extend-pixel") {
+        const long n = std::strtol(value, &end, 10);
+        if (end == value || *end || errno == ERANGE || n < 0 || n > INT_MAX) {
+            error = "extend-pixel must be a nonnegative integer";
+            return false;
+        }
+        p.extend_pixel = (int)n;
+        return true;
+    }
+    const float n = std::strtof(value, &end);
+    if (end == value || *end || errno == ERANGE || !std::isfinite(n) || n <= 0 ||
+        (name == "fov" && n >= 180)) {
+        error = name == "fov" ? "fov must be finite and between 0 and 180 degrees"
+                              : "mesh-scale must be finite and positive";
+        return false;
+    }
+    if (name == "fov") p.fov_deg = n;
+    else p.mesh_scale = n;
+    return true;
+}
 
 const char* model_family_name(ModelFamily f) {
     return f == ModelFamily::Pixal3D ? "pixal3d" : "trellis";
@@ -105,9 +132,14 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
                                                   if      (std::strcmp(v, "trellis") == 0) p.family = ModelFamily::Trellis;
                                                   else if (std::strcmp(v, "pixal3d") == 0) p.family = ModelFamily::Pixal3D;
                                                   else { fprintf(stderr, "[trellis] unknown model family: %s (trellis|pixal3d)\n", v); return false; } }
-        else if (a == "--fov")                  { const char* v = need(a.c_str()); if (!v) return false; p.fov_deg = (float)atof(v); }
-        else if (a == "--mesh-scale")           { const char* v = need(a.c_str()); if (!v) return false; p.mesh_scale = (float)atof(v); }
-        else if (a == "--extend-pixel")         { const char* v = need(a.c_str()); if (!v) return false; p.extend_pixel = atoi(v); }
+        else if (a == "--fov" || a == "--mesh-scale" || a == "--extend-pixel") {
+            const char* v = need(a.c_str()); if (!v) return false;
+            std::string error;
+            if (!parse_camera_arg(a.substr(2), v, p, error)) {
+                fprintf(stderr, "[trellis] %s\n", error.c_str());
+                return false;
+            }
+        }
         else if (a == "--no-naf")               { p.naf = false; }
         else if (a == "--gpu")                  { const char* v = need(a.c_str()); if (!v) return false; p.gpu = atoi(v); }
         else if (a == "-s" || a == "--seed")    { const char* v = need(a.c_str()); if (!v) return false; p.seed = (uint32_t)atoi(v); }

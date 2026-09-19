@@ -22,6 +22,9 @@ static float focal_pixels(float camera_angle_x, int resolution) {
 
 CameraParams pixal3d_camera(float camera_angle_x, float mesh_scale,
                             int image_resolution, int extend_pixel) {
+    if (!std::isfinite(camera_angle_x) || camera_angle_x <= 0 || camera_angle_x >= 3.14159265358979323846 ||
+        !std::isfinite(mesh_scale) || mesh_scale <= 0 || image_resolution <= 0 || extend_pixel < 0)
+        throw std::invalid_argument("pixal3d: invalid camera parameters");
     CameraParams cam;
     cam.camera_angle_x = camera_angle_x;
     cam.mesh_scale     = mesh_scale;
@@ -33,6 +36,8 @@ CameraParams pixal3d_camera(float camera_angle_x, float mesh_scale,
     const float x_world = -0.5f / mesh_scale;
     const float x_ndc   = -(float)extend_pixel - (float)image_resolution * 0.5f;
     cam.distance = f_px * x_world / x_ndc;
+    if (!std::isfinite(cam.distance) || cam.distance <= 0)
+        throw std::invalid_argument("pixal3d: camera distance is not finite and positive");
     return cam;
 }
 
@@ -52,6 +57,8 @@ void pixal3d_project_cell(int R, int cx, int cy, int cz, const CameraParams& cam
     const float inv   = 1.0f / (depth + 1e-8f);
     px = f_px * wx * inv + (float)image_resolution * 0.5f;
     py = -f_px * wz * inv + (float)image_resolution * 0.5f;   // image y grows downward
+    if (!std::isfinite(px) || !std::isfinite(py))
+        throw std::invalid_argument("pixal3d: camera projects a cell to non-finite coordinates");
 }
 
 // Bilinear sample of a channel-major [C, Hf*Wf] map at a pixel position expressed in the

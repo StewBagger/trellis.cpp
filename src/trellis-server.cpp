@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <utility>
 #include <string>
 
 namespace {
@@ -111,9 +112,16 @@ int main(int argc, char** argv) {
         }
         // Camera, for pixal3d. Unlike every other knob these describe the IMAGE rather than the
         // run, so a launch-time default is close to useless on a server taking arbitrary uploads.
-        if (req.has_file("fov"))          p.fov_deg      = (float) atof(req.get_file_value("fov").content.c_str());
-        if (req.has_file("mesh_scale"))   p.mesh_scale   = (float) atof(req.get_file_value("mesh_scale").content.c_str());
-        if (req.has_file("extend_pixel")) p.extend_pixel = atoi(req.get_file_value("extend_pixel").content.c_str());
+        for (const auto& field : {std::pair<const char*, const char*>{"fov", "fov"},
+                                  {"mesh_scale", "mesh-scale"}, {"extend_pixel", "extend-pixel"}}) {
+            if (!req.has_file(field.first)) continue;
+            std::string error;
+            if (!trellis::parse_camera_arg(field.second, req.get_file_value(field.first).content.c_str(), p, error)) {
+                res.status = 400;
+                res.set_content(error + "\n", "text/plain");
+                return;
+            }
+        }
         if (req.has_file("webp")) {
             const std::string& w = req.get_file_value("webp").content;
             p.webp = (w == "off" || w == "0" || w == "false") ? 0

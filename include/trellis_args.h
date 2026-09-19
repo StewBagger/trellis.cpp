@@ -107,5 +107,6 @@ void print_usage(const char* argv0, bool server);
 // (non-flag) positionals fill `image` then `output`. Returns false on a parse
 // error OR when --help was requested; check p.help to tell them apart.
 bool parse_args(int argc, char** argv, TrellisParams& p);
+bool parse_camera_arg(const std::string& name, const char* value, TrellisParams& p, std::string& error);
 
 }  // namespace trellis
