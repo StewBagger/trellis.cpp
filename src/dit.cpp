@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 
 namespace trellis {
@@ -18,8 +19,22 @@ static bool g_cast_f32 = false;   // set per build_dit_dense call
 static constexpr int64_t kAttnChunkBytes = 1024ll * 1024 * 1024;
 bool g_no_fa = false;             // --no-fa; set by trellis_run
 
+static std::string ne_str(const T* t) {
+    std::string s = "[";
+    for (int i = 0; i < 4 && t->ne[i] > 1; ++i) s += (i ? ", " : "") + std::to_string(t->ne[i]);
+    return s + "]";
+}
+
 static T* lin(ggml_context* c, const Model& m, const std::string& p, T* x) {
     T* w = m.get(p + ".weight");
+    // A GGUF whose layout does not match what this graph assumes reaches ggml as a bare
+    // GGML_ASSERT(ggml_can_mul_mat) and a core dump, naming neither the tensor nor the shapes.
+    // Since third-party conversions are a normal way to obtain these weights, say what broke.
+    if (w->ne[0] != x->ne[0])
+        throw std::runtime_error("dit: " + p + ".weight expects an input width of " +
+                                 std::to_string(w->ne[0]) + " but the activation is " +
+                                 std::to_string(x->ne[0]) + " wide (weight ne=" + ne_str(w) +
+                                 ", input ne=" + ne_str(x) + ")");
     if (g_cast_f32 && w->type == GGML_TYPE_F16) w = ggml_cast(c, w, GGML_TYPE_F32);
     T* y = ggml_mul_mat(c, w, x);
     if (T* b = m.try_get(p + ".bias")) y = ggml_add(c, y, b);
@@ -116,7 +131,14 @@ static T* sdpa(ggml_context* c, T* q, T* k, T* v, int d_model, T* mask = nullptr
     // reads only -0.0019 vs -0.00014 (its oracle is -0.00010). MMA already accumulated KQ in
     // FP32, so only the VKQ sum stagnated there -- same bug, ~9x milder.
     // --no-fa falls back to the exact chunked path (correct on any backend, ~2.7x slower).
-    const bool no_fa = g_no_fa;
+    // FlashAttention exists here to avoid materialising the [Lk, Lq, nh] score matrix, which is
+    // terabytes at the HR flow. When Lk is shorter than one FA key tile that matrix is trivially
+    // small and FA buys nothing — while costing a great deal of risk. Pixal3D's proj mode
+    // cross-attends over 5 global tokens, so the key dim gets zero-padded 5 -> 256: 98% padding,
+    // a regime TRELLIS.2 (1029 or 4101 keys) never reaches, and precisely the shape whose mask
+    // handling the comments below record as fragile and token-count dependent. Take the exact
+    // path instead; at Lk = 5 it is cheaper than FA anyway.
+    const bool no_fa = g_no_fa || k->ne[2] < 256;
     if (!no_fa) {
         // TRELLIS_FA_FAST=1: F16 K/V + default (F16) accumulation — the shapes
         // the Vulkan coopmat FA shaders are specialized for. A/B only: F16 K/V
@@ -228,7 +250,7 @@ static T* modulate(ggml_context* c, T* x, T* scale, T* shift) {
     return ggml_add(c, ggml_add(c, x, ggml_mul(c, x, scale)), shift);
 }
 
-static T* block(ggml_context* c, const Model& m, int i, T* h, T* mod, T* cond,
+static T* block(ggml_context* c, const Model& m, int i, T* h, T* mod, T* cond, T* proj,
                 T* cos, T* sin, const DiTParams& p, std::map<std::string, T*>* inter = nullptr,
                 T* self_mask = nullptr, T* cross_mask = nullptr) {
     const std::string b = "blocks." + std::to_string(i);
@@ -246,7 +268,15 @@ static T* block(ggml_context* c, const Model& m, int i, T* h, T* mod, T* cond,
     h = ggml_add(c, h, ggml_mul(c, hh, gate_msa));
 
     hh = layernorm(c, h, p.ln_eps, m.get(b + ".norm2.weight"), m.get(b + ".norm2.bias"));
-    hh = cross_attn(c, m, b + ".cross_attn", hh, cond, p, cross_mask);
+    if (p.proj_mode) {
+        // ProjectAttention: cross_attn_block(h, global_tokens) + proj_linear(view_aligned).
+        // The sum REPLACES the cross-attention output as the residual branch (both the dense
+        // and the sparse Pixal3D modules do exactly this), so the add below is unchanged.
+        hh = cross_attn(c, m, b + ".cross_attn.cross_attn_block", hh, cond, p, cross_mask);
+        hh = ggml_add(c, hh, lin(c, m, b + ".cross_attn.proj_linear", proj));
+    } else {
+        hh = cross_attn(c, m, b + ".cross_attn", hh, cond, p, cross_mask);
+    }
     dbg("blk0_cross", hh);
     h = ggml_add(c, h, hh);
 
@@ -261,9 +291,10 @@ static T* block(ggml_context* c, const Model& m, int i, T* h, T* mod, T* cond,
 }
 
 ggml_tensor* build_dit_dense(ggml_context* c, const Model& m, const DiTParams& p,
-                             T* h0, T* tfreq, T* cond, T* cos, T* sin,
+                             T* h0, T* tfreq, T* cond, T* proj, T* cos, T* sin,
                              std::map<std::string, T*>* inter) {
     g_cast_f32 = p.cast_f32;
+    if (p.proj_mode && !proj) throw std::runtime_error("build_dit_dense: proj mode needs a proj input");
     auto keep = [&](const char* n, T* t) { if (inter) (*inter)[n] = t; ggml_set_name(t, n); return t; };
 
     T* h = lin(c, m, "input_layer", h0);                       // [d_model, L]
@@ -281,7 +312,7 @@ ggml_tensor* build_dit_dense(ggml_context* c, const Model& m, const DiTParams& p
     T* self_mask  = build_pad_mask(c, h0->ne[1], h0->ne[1]);
     T* cross_mask = build_pad_mask(c, cond->ne[1], h0->ne[1]);
     for (int i = 0; i < p.n_blocks; ++i) {
-        h = block(c, m, i, h, mod, cond, cos, sin, p, inter, self_mask, cross_mask);
+        h = block(c, m, i, h, mod, cond, proj, cos, sin, p, inter, self_mask, cross_mask);
         if (i == 0) keep("after_block0", h);
         if (i == 1) keep("after_block1", h);
         if (i == p.n_blocks - 1) keep("after_block29", h);

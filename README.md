@@ -118,7 +118,25 @@ The most useful ones:
 | `--atlas PX` | UV atlas size (default 2048 @1024 / 1024 @512) |
 | `--box-uv` | voxel-native 6-way box projection instead of the default xatlas unwrap (O(faces), faster, looser packing) |
 | `--seed N` | RNG seed |
+| `--model trellis\|pixal3d` | which family of flow weights `--models` holds (see [Pixal3D backend](docs/pixal3d/README.md)) |
 | `--require-gpu` | fail instead of falling back to the (very slow, RAM-hungry) CPU path |
+
+### Pixal3D
+
+`--model pixal3d` runs [TencentARC/Pixal3D](https://github.com/TencentARC/Pixal3D) on the
+same engine. Pixal3D is a TRELLIS.2 fine-tune that replaces cross-attention over the DINOv3
+patch tokens with **pixel-aligned projection conditioning**: each DiT token is a grid cell,
+projected into the image and sampled there. The samplers, decoders, remesh and bake are
+shared, so the integration is a conditioning module plus one branch inside the DiT block.
+The shape/texture stages also run the NAF guided feature upsampler, ported in
+`src/naf.cpp`.
+
+Both families use the **same model directory**: the Pixal3D flows and NAF are named
+`pixal3d_*.gguf`, while the decoders, DINOv3 and BiRefNet are byte-identical and shared,
+so adding Pixal3D to a working TRELLIS.2 set is 5 new files — pre-built at
+[`vegax87/Pixal3D`](https://huggingface.co/vegax87/Pixal3D). See
+**[docs/pixal3d/README.md](docs/pixal3d/README.md)** for the model list, the `--fov`
+camera flag (MoGe-2 estimation is not ported) and the known gaps.
 
 The postprocess matches the reference pipeline op for op (see
 `docs/spec/27-reference-postprocess.md` / `28-divergence-matrix.md`): the raw
