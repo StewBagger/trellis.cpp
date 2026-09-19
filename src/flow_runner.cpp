@@ -1,5 +1,7 @@
 #include "flow_runner.h"
 #include "trellis_model.h"
+#include "trellis_debug.h"
+#include "trellis_sched.h"
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-alloc.h"
@@ -55,28 +57,32 @@ DitRunner::DitRunner(const Model& m, const DiTParams& p, int N, int n_cond,
     gcos_ = ggml_new_tensor_4d(ctx_, GGML_TYPE_F32, 1, half, 1, N_); ggml_set_input(gcos_);
     gsin_ = ggml_new_tensor_4d(ctx_, GGML_TYPE_F32, 1, half, 1, N_); ggml_set_input(gsin_);
     dbg_nan_ = std::getenv("TRELLIS_DBG_NAN") != nullptr;
-    gout_ = build_dit_dense(ctx_, m_, p_, gh0_, gtf_, gcond_, gproj_, gcos_, gsin_,
-                            dbg_nan_ ? &inter_ : nullptr);
-    g_ = ggml_new_graph_custom(ctx_, kDitGraphNodes, false);
-    ggml_build_forward_expand(g_, gout_);
-    ggml_set_output(gout_);
-    if (dbg_nan_) for (auto& [nm, t] : inter_) { ggml_build_forward_expand(g_, t); ggml_set_output(t); }
-    alloc_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(m_.backend));
-    if (!ggml_gallocr_alloc_graph(alloc_, g_)) {
-        // Constructors that throw do not run DitRunner::~DitRunner(), so explicitly release
-        // partial allocator/context state before propagating the failure.
-        ggml_gallocr_free(alloc_); alloc_ = nullptr;
-        ggml_free(ctx_); ctx_ = nullptr;
-        throw std::runtime_error("DitRunner: alloc failed");
+    {
+        ScopedTimer _t("dit.build_graph");
+        gout_ = build_dit_dense(ctx_, m_, p_, gh0_, gtf_, gcond_, gproj_, gcos_, gsin_, dbg_nan_ ? &inter_ : nullptr);
+        g_ = ggml_new_graph_custom(ctx_, kDitGraphNodes, false);
+        ggml_build_forward_expand(g_, gout_);
+        ggml_set_output(gout_);
+        if (dbg_nan_) for (auto& [nm, t] : inter_) { ggml_build_forward_expand(g_, t); ggml_set_output(t); }
+    }
+    log_graph("dit.graph", g_);
+    {
+        ScopedTimer _t("dit.alloc_graph");
+        exec_ = std::make_unique<GraphExec>(m_);
+        if (!exec_->alloc(g_)) {
+            exec_.reset();
+            ggml_free(ctx_); ctx_ = nullptr;
+            throw std::runtime_error("DitRunner: alloc failed");
+        }
     }
     if (getenv("TRELLIS_DBG_ALLOC"))
-        fprintf(stderr, "      [dit-alloc] N=%d nodes=%d gallocr buffer = %.2f GB\n",
-                N_, ggml_graph_n_nodes(g_), ggml_gallocr_get_buffer_size(alloc_, 0) / 1e9);
+        fprintf(stderr, "      [dit-alloc] N=%d nodes=%d buffer = %.2f GB\n",
+                N_, ggml_graph_n_nodes(g_), exec_->buffer_size() / 1e9);
     rcos_ = rcos; rsin_ = rsin;   // keep; re-upload each forward (gallocr reuses input buffers across runs)
 }
 
 DitRunner::~DitRunner() {
-    if (alloc_) ggml_gallocr_free(alloc_);
+    exec_.reset();
     if (ctx_)   ggml_free(ctx_);
 }
 
@@ -93,12 +99,33 @@ std::vector<float> DitRunner::forward(const std::vector<float>& xt, float t_scal
     }
     ggml_backend_tensor_set(gcos_, rcos_.data(), 0, rcos_.size() * 4);   // re-upload (buffers reused across runs)
     ggml_backend_tensor_set(gsin_, rsin_.data(), 0, rsin_.size() * 4);
-    if (ggml_backend_graph_compute(m_.backend, g_) != GGML_STATUS_SUCCESS)
+    if (exec_->compute(g_, "dit.forward") != GGML_STATUS_SUCCESS)
         throw std::runtime_error("DitRunner: compute failed");
-    std::vector<float> outv = tensor_to_f32(gout_);
+    std::vector<float> outv;
+    { ScopedTimer _t("dit.readback"); outv = tensor_to_f32(gout_); }
     size_t out_bad = 0; for (float x : outv) if (!std::isfinite(x)) out_bad++;
     // Dump the per-layer breakdown for the FIRST forward whose OUTPUT goes NaN (the failing low-t
     // step), not just the very first forward (which is clean) — that's where to look for the cause.
+    if (verbose()) {
+        double mn = 0, mx = 0, sum = 0, sq = 0;
+        size_t bad = 0;
+        for (size_t i = 0; i < outv.size(); ++i) {
+            const float x = outv[i];
+            if (!std::isfinite(x)) { bad++; continue; }
+            if (i == 0 || x < mn) mn = x;
+            if (i == 0 || x > mx) mx = x;
+            sum += x; sq += (double) x * x;
+        }
+        const double n    = (double) (outv.size() - bad);
+        const double mean = n > 0 ? sum / n : 0.0;
+        const double std  = n > 0 ? std::sqrt(std::max(0.0, sq / n - mean * mean)) : 0.0;
+        fprintf(stderr, "      [dit-fwd %2d] t=%.3f mean=%.4f std=%.4f min=%.3f max=%.3f nan/inf=%zu"
+                        "  out=%p buf=%s\n",
+                n_fwd_++, t_scaled, mean, std, mn, mx, bad,
+                (void*) gout_->data,
+                gout_->buffer ? ggml_backend_buffer_name(gout_->buffer) : "(none)");
+    }
+
     if (dbg_nan_ && !dbg_done_ && out_bad > 0) {
         dbg_done_ = true;
         fprintf(stderr, "      [dit-nan] *** first NaN forward: t_scaled=%.2f  out_nan=%zu/%zu ***\n",

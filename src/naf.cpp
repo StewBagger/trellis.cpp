@@ -1,5 +1,6 @@
 #include "naf.h"
 #include "trellis_model.h"
+#include "trellis_sched.h"
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-alloc.h"
@@ -113,13 +114,13 @@ static std::vector<float> encode_guide(const Model& m, const std::vector<float>&
 
     ggml_cgraph* g = ggml_new_graph_custom(c, 8192, false);
     ggml_build_forward_expand(g, x);
-    ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(m.backend));
-    if (!ggml_gallocr_alloc_graph(alloc, g)) throw std::runtime_error("naf: alloc failed");
+    GraphExec exec(m);
+    if (!exec.alloc(g)) { ggml_free(c); throw std::runtime_error("naf: alloc failed"); }
     ggml_backend_tensor_set(img, img01.data(), 0, img01.size() * 4);
-    if (ggml_backend_graph_compute(m.backend, g) != GGML_STATUS_SUCCESS)
+    if (exec.compute(g, "naf.encode") != GGML_STATUS_SUCCESS)
         throw std::runtime_error("naf: compute failed");
     std::vector<float> planar = tensor_to_f32(x);        // ggml [out, out, DIM] -> x + out*y + out*out*ch
-    ggml_gallocr_free(alloc); ggml_free(c);
+    ggml_free(c);
 
     const size_t np = (size_t)out * out;
     std::vector<float> pix(np * DIM);

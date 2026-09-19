@@ -72,7 +72,28 @@ void print_usage(const char* argv0, bool server) {
         "                          the shape/texture stages then lose their high-frequency\n"
         "                          projection branch)\n"
         "      --gpu N             GPU index, <0 = CPU          (default 0)\n"
+        "      --backend NAME      force a ggml backend: Vulkan | HTP | CPU | ...\n"
+        "                          (HTP is the Qualcomm Hexagon NPU. Default: auto.\n"
+        "                          Run trellis-devices to list what this build sees.\n"
+        "                          Needed on Snapdragon, where the NPU and the Adreno\n"
+        "                          GPU both register as GPU devices.)\n"
+        "  -t, --threads N         CPU backend threads (default: all cores. ggml's own\n"
+        "                          default is 4 regardless of core count.)\n"
+        "      --sched on|off      run graphs through the multi-backend scheduler so ops\n"
+        "                          the chosen backend cannot execute fall back to another\n"
+        "                          (default: on unless the backend is the CPU). Required\n"
+        "                          for --backend HTP, whose op coverage is partial.\n"
+        "      --vulkan-fallback  with HTP, try Vulkan before CPU for unsupported ops\n"
+        "                          (same as TRELLIS_VULKAN_FALLBACK=1)\n"
+        "      --no-vulkan-fallback\n"
+        "                          disable Vulkan fallback even if the environment enables it\n"
+        "  -v, --verbose           per-stage timings, graph node counts, and a heartbeat\n"
+        "                          while a backend compute is running (TRELLIS_VERBOSE=1;\n"
+        "                          =2 also dumps the per-op histogram of each graph)\n"
         "  -s, --seed N            RNG seed                     (default 42)\n"
+        "      --steps N           flow sampler steps (default 12). Lower is faster and\n"
+        "                          rougher; useful for backend bring-up, where a CPU and\n"
+        "                          an NPU run at the same N stay directly comparable.\n"
         "      --res 512|1024|1536 geometry resolution\n"
         "      --max-tokens N      HR token budget              (default 49152)\n"
         "      --bg-removal MODE   threshold | birefnet   (default: auto -- a pre-matted\n"
@@ -99,6 +120,8 @@ void print_usage(const char* argv0, bool server) {
         "                          post-processing pipelines\n"
         "      --bg-only           background removal only: write the cutout and skip the rest\n"
         "      --f32               f32 sparse-conv compute\n"
+        "      --fa-fast           force F16 K/V + fast accumulation (default on HTP)\n"
+        "      --fa-f32            use BF16 K/V + F32 accumulation (HTP opt-out)\n"
         "      --no-fa             disable FlashAttention\n"
         "      --require-gpu       refuse CPU fallback\n"
         "      --threads N         CPU backend threads      (default all cores)\n"
@@ -142,6 +165,16 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
         }
         else if (a == "--no-naf")               { p.naf = false; }
         else if (a == "--gpu")                  { const char* v = need(a.c_str()); if (!v) return false; p.gpu = atoi(v); }
+        else if (a == "--backend")              { const char* v = need(a.c_str()); if (!v) return false; p.backend = v; }
+        else if (a == "-t" || a == "--threads") { const char* v = need(a.c_str()); if (!v) return false; p.threads = atoi(v); }
+        else if (a == "-v" || a == "--verbose") { p.verbose = true; }
+        else if (a == "--steps")                { const char* v = need(a.c_str()); if (!v) return false; p.steps = atoi(v); }
+        else if (a == "--sched")                { const char* v = need(a.c_str()); if (!v) return false;
+                                                  if (strcmp(v, "on") == 0 || strcmp(v, "1") == 0) p.sched = 1;
+                                                  else if (strcmp(v, "off") == 0 || strcmp(v, "0") == 0) p.sched = 0;
+                                                  else { fprintf(stderr, "[trellis] --sched expects on or off\n"); return false; } }
+        else if (a == "--vulkan-fallback")      { p.vulkan_fallback = 1; }
+        else if (a == "--no-vulkan-fallback")   { p.vulkan_fallback = 0; }
         else if (a == "-s" || a == "--seed")    { const char* v = need(a.c_str()); if (!v) return false; p.seed = (uint32_t)atoi(v); }
         else if (a == "--res")                  { const char* v = need(a.c_str()); if (!v) return false; p.set_res(atoi(v)); }
         else if (a == "--max-tokens")           { const char* v = need(a.c_str()); if (!v) return false; p.max_tokens = atoi(v); }
@@ -161,6 +194,8 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
         else if (a == "--dump-bg")              { p.dump_bg = true; }
         else if (a == "--bg-only")              { p.bg_only = true; p.dump_bg = true; }
         else if (a == "--f32")                  { p.f32 = true; }
+        else if (a == "--fa-fast")              { p.fa_fast = 1; }
+        else if (a == "--fa-f32")               { p.fa_fast = 0; }
         else if (a == "--no-fa")                { p.no_fa = true; }
         else if (a == "--require-gpu")          { p.require_gpu = true; }
         else if (a == "--threads")              { const char* v = need(a.c_str()); if (!v) return false; p.threads = atoi(v); }

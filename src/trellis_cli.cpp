@@ -2,6 +2,8 @@
 //   trellis-cli <image.png> <out.glb> [gpu] [models_dir] [seed]
 // Models are loaded/freed per stage to keep VRAM modest.
 #include "trellis_model.h"
+#include "trellis_debug.h"
+#include "trellis_sched.h"
 #include "preprocess.h"
 #include "dinov3.h"
 #include "pixal3d.h"
@@ -26,9 +28,16 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
+#include <cctype>
 
 using std::vector;
 static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+static bool backend_is_htp(const std::string& backend) {
+    if (backend.size() != 3) return false;
+    return std::tolower((unsigned char)backend[0]) == 'h' &&
+           std::tolower((unsigned char)backend[1]) == 't' &&
+           std::tolower((unsigned char)backend[2]) == 'p';
+}
 // [dbg] overall stats of a flat tensor — used to compare LR vs HR shape-SLAT in decode space.
 static void slat_stats(const char* tag, const vector<float>& v) {
     if (v.empty()) { printf("      [stats] %s EMPTY\n", tag); return; }
@@ -65,8 +74,41 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     // Publish the cross-module flags this run wants (modules read them with an env fallback).
     const bool F32 = cfg.f32; trellis::g_sparse_cast_f32 = F32;  // f16 default (rope bug was the real issue)
     trellis::g_no_fa = cfg.no_fa;
+    // CLI flags win over environment switches and the HTP-specific fast default.
+    std::string requested_backend = cfg.backend;
+    if (requested_backend.empty()) {
+        if (const char* e = std::getenv("TRELLIS_BACKEND")) requested_backend = e;
+    }
+    const bool fa_f32_env = std::getenv("TRELLIS_FA_F32") != nullptr;
+    const bool fa_fast_env = std::getenv("TRELLIS_FA_FAST") != nullptr;
+    const bool fa_auto_htp = cfg.fa_fast < 0 && !fa_f32_env && !fa_fast_env &&
+                             backend_is_htp(requested_backend);
+    if (cfg.fa_fast >= 0) {
+        trellis::g_fa_fast = cfg.fa_fast;
+    } else if (fa_f32_env) {
+        trellis::g_fa_fast = 0;
+    } else if (fa_fast_env) {
+        trellis::g_fa_fast = 1;
+    } else {
+        // An empty requested backend is genuinely auto-selected later by Model::load;
+        // leave the policy unresolved so sdpa can inspect that model's actual backend.
+        trellis::g_fa_fast = requested_backend.empty() ? -1 : (fa_auto_htp ? 1 : 0);
+    }
     trellis::g_require_gpu = cfg.require_gpu;
     trellis::g_cpu_threads = cfg.threads;
+    trellis::g_backend = cfg.backend;
+    trellis::set_verbose(cfg.verbose);
+    trellis::set_sched_mode(cfg.sched);
+    trellis::set_vulkan_fallback_mode(cfg.vulkan_fallback);
+    if (!cfg.no_fa) {
+        if (trellis::g_fa_fast < 0) {
+            fprintf(stderr, "[trellis] FlashAttention precision: auto (F16 fast on HTP; BF16/F32 otherwise)\n");
+        } else {
+            fprintf(stderr, "[trellis] FlashAttention precision: %s%s\n",
+                    trellis::g_fa_fast ? "F16 fast" : "BF16 K/V + F32 accumulation",
+                    fa_auto_htp ? " (HTP default)" : "");
+        }
+    }
     const std::string& img = cfg.image;
     const std::string& outglb = cfg.output;
     const std::string& M = cfg.models;
@@ -123,7 +165,14 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         printf("[1/6] preprocess %s (BiRefNet bg removal, %s)\n", img.c_str(), cascade ? "1024 cascade" : "512");
         // Full BiRefNet (Swin-L backbone + deformable-conv decoder) runs on the GPU. Cutout computed
         // once, normalized for 512 and 1024.
-        trellis::Model bm = trellis::Model::load(M + "/birefnet.gguf", gpu);
+        // BiRefNet's small convolutions are slower and currently nondeterministic on HTP.
+        // Keep other explicitly selected backends on their existing path.
+        const std::string bg_saved_backend = trellis::g_backend;
+        const bool bg_on_cpu = backend_is_htp(requested_backend);
+        if (bg_on_cpu) trellis::g_backend = "CPU";
+        trellis::Model bm = trellis::Model::load(M + "/birefnet.gguf",
+                                                 bg_on_cpu ? -1 : gpu);
+        trellis::g_backend = bg_saved_backend;
         cutout = trellis::birefnet_cutout(img, bm, gpu < 0 ? 0 : gpu, cut_sz);
         bm.free();
         if (cutout.empty()) return 1;
@@ -224,7 +273,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         if (pix) pc = build_proj(16, 512, 0, p.proj_ch, nullptr);
         trellis::DitRunner* run = trellis::make_dense_runner(m, p, 16, Lc);
         trellis::FlowFwd fwd = [&](const vector<float>& x, float ts, const trellis::FlowCond& c){ return run->forward(x, ts, c); };
-        trellis::SamplerParams sp; sp.steps=12; sp.guidance_strength=cfg.gss; sp.guidance_rescale=0.7f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=5.0f;
+        trellis::SamplerParams sp; sp.steps=(cfg.steps>0?cfg.steps:12); sp.guidance_strength=cfg.gss; sp.guidance_rescale=0.7f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=5.0f;
         vector<float> z = trellis::sample_flow(fwd, noise(8*4096),
                               trellis::FlowCond(cond.data(), pix ? pc.proj.data()     : nullptr),
                               trellis::FlowCond(neg.data(),  nullptr), sp);  // [8,4096] ne0=8
@@ -232,7 +281,13 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // transpose [8,L] -> torch [8,16,16,16] memory (c*4096 + sp)
         vector<float> zdec(8*4096);
         for (int c = 0; c < 8; ++c) for (int sp2 = 0; sp2 < 4096; ++sp2) zdec[(size_t)c*4096 + sp2] = z[c + 8*sp2];
-        trellis::Model d = trellis::Model::load(M + "/ss_dec.gguf", gpu);
+        // This small decoder currently miscomputes a CONT/view-to-ADD chain on HTP.
+        // Its CPU cost is negligible; other backends retain their existing placement.
+        const std::string saved_backend = trellis::g_backend;
+        const bool ss_dec_on_cpu = backend_is_htp(requested_backend);
+        if (ss_dec_on_cpu) trellis::g_backend = "CPU";
+        trellis::Model d = trellis::Model::load(M + "/ss_dec.gguf", ss_dec_on_cpu ? -1 : gpu);
+        trellis::g_backend = saved_backend;
         vector<float> logits = trellis::ss_decode(d, zdec); d.free();
         coords = trellis::ss_coords(logits, 64, 32);
     }
@@ -264,7 +319,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         if (pix) pc = build_proj(grid_res, S, naf_out, p.proj_ch, &cds);
         trellis::DitRunner* run = trellis::make_sparse_runner(m, p, cds, lc);
         trellis::FlowFwd fwd = [&](const vector<float>& x, float ts, const trellis::FlowCond& c){ return run->forward(x, ts, c); };
-        trellis::SamplerParams sp; sp.steps=12; sp.guidance_strength=cfg.gsh; sp.guidance_rescale=0.5f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=3.0f;
+        trellis::SamplerParams sp; sp.steps=(cfg.steps>0?cfg.steps:12); sp.guidance_strength=cfg.gsh; sp.guidance_rescale=0.5f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=3.0f;
         vector<float> sn = trellis::sample_flow(fwd, noise((size_t)32*n),
                                trellis::FlowCond(cnd,  pix ? pc.proj.data()     : nullptr),
                                trellis::FlowCond(ncnd, nullptr), sp);   // [32,n]
@@ -476,7 +531,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 }
                 return run->forward(x64, ts, c);
             };
-            trellis::SamplerParams sp; sp.steps=12; sp.guidance_strength=1.0f; sp.guidance_rescale=0.0f; sp.gi0=0.6f; sp.gi1=0.9f; sp.rescale_t=3.0f;
+            trellis::SamplerParams sp; sp.steps=(cfg.steps>0?cfg.steps:12); sp.guidance_strength=1.0f; sp.guidance_rescale=0.0f; sp.gi0=0.6f; sp.gi1=0.9f; sp.rescale_t=3.0f;
             texlat = trellis::sample_flow(fwd, noise((size_t)32*tN),
                          trellis::FlowCond(tcond, pix ? pc.proj.data()     : nullptr),
                          trellis::FlowCond(tneg,  nullptr), sp);  // [32,tN]

@@ -1,8 +1,10 @@
 #include "dit.h"
 #include "trellis_model.h"
 #include "ggml.h"
+#include "ggml-backend.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +21,7 @@ static bool g_cast_f32 = false;   // set per build_dit_dense call
 // Bounds the peak regardless of Lq, which is what made FA necessary in the first place.
 static constexpr int64_t kAttnChunkBytes = 1024ll * 1024 * 1024;
 bool g_no_fa = false;             // --no-fa; set by trellis_run
+int  g_fa_fast = -1;              // auto backend/env; CLI/server may resolve to 0 or 1
 
 static std::string ne_str(const T* t) {
     std::string s = "[";
@@ -100,7 +103,17 @@ static T* build_pad_mask(ggml_context* c, int64_t Lk_real, int64_t Lq) {
 }
 
 // SDPA over heads. q:[hd,nh,Lq]  k,v:[hd,nh,Lk] -> [d_model, Lq].  `mask`: optional [Lk_pad,Lq] F16.
-static T* sdpa(ggml_context* c, T* q, T* k, T* v, int d_model, T* mask = nullptr) {
+static bool model_backend_is_htp(const Model& m) {
+    const char* name = m.backend ? ggml_backend_name(m.backend) : nullptr;
+    const std::string backend = name ? name : "";
+    return backend.size() >= 3 &&
+           std::tolower((unsigned char)backend[0]) == 'h' &&
+           std::tolower((unsigned char)backend[1]) == 't' &&
+           std::tolower((unsigned char)backend[2]) == 'p';
+}
+
+static T* sdpa(ggml_context* c, const Model& m, T* q, T* k, T* v,
+               int d_model, T* mask = nullptr) {
     const float scale = 1.0f / std::sqrt((float)q->ne[0]);
     // FlashAttention: a fused, tiled SDPA that never materialises the [Lk,Lq,nh] score
     // matrix — O(N) memory instead of O(N^2). That score buffer is exactly what OOMs the
@@ -141,10 +154,15 @@ static T* sdpa(ggml_context* c, T* q, T* k, T* v, int d_model, T* mask = nullptr
     // path instead; at Lk = 5 it is cheaper than FA anyway.
     const bool no_fa = g_no_fa || k->ne[2] < 256;
     if (!no_fa) {
-        // TRELLIS_FA_FAST=1: F16 K/V + default (F16) accumulation — the shapes
-        // the Vulkan coopmat FA shaders are specialized for. A/B only: F16 K/V
-        // can overflow on HR activations (the reason BF16+F32 is the default).
-        static const bool fa_fast = std::getenv("TRELLIS_FA_FAST") != nullptr;
+        // Fast mode uses F16 K/V + the backend's default accumulation. It is the HTP
+        // default after the 12-step res512 gate showed a 3.53x end-to-end speedup with
+        // identical sparse voxels and 1.5% decoded-voxel drift. Other backends retain
+        // BF16 K/V + F32 accumulation unless explicitly forced. Test binaries that do
+        // not enter trellis_run keep the historical TRELLIS_FA_FAST environment switch.
+        const bool fa_fast = g_fa_fast >= 0 ? g_fa_fast != 0
+                           : std::getenv("TRELLIS_FA_F32") ? false
+                           : std::getenv("TRELLIS_FA_FAST") ? true
+                           : model_backend_is_htp(m);
         const int64_t KQ_STRIDE = 256;
         auto prep_kv = [&](T* x) {                              // -> [hd, Lk_pad, nh] BF16
             T* p = ggml_cont(c, ggml_permute(c, x, 0, 2, 1, 3));   // [hd, Lk, nh] F32
@@ -267,7 +285,7 @@ static T* self_attn(ggml_context* c, const Model& m, const std::string& pre, T* 
     k = rms_gamma(c, k, gamma32(c, m, pre + ".k_rms_norm.gamma"), p.rms_eps);
     q = apply_rope(c, q, cos, sin);
     k = apply_rope(c, k, cos, sin);
-    return lin(c, m, pre + ".to_out", sdpa(c, q, k, v, p.d_model, mask));
+    return lin(c, m, pre + ".to_out", sdpa(c, m, q, k, v, p.d_model, mask));
 }
 
 static T* cross_attn(ggml_context* c, const Model& m, const std::string& pre, T* h, T* cond,
@@ -285,7 +303,7 @@ static T* cross_attn(ggml_context* c, const Model& m, const std::string& pre, T*
     T* k = pick(0); T* v = pick(1);
     q = rms_gamma(c, q, gamma32(c, m, pre + ".q_rms_norm.gamma"), p.rms_eps);
     k = rms_gamma(c, k, gamma32(c, m, pre + ".k_rms_norm.gamma"), p.rms_eps);
-    return lin(c, m, pre + ".to_out", sdpa(c, q, k, v, p.d_model, mask));
+    return lin(c, m, pre + ".to_out", sdpa(c, m, q, k, v, p.d_model, mask));
 }
 
 // x*(1+scale)+shift, scale/shift: [d_model] broadcast over L

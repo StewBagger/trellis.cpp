@@ -9,8 +9,10 @@ namespace trellis {
 // binaries (which don't parse args) keep their historical TRELLIS_* behavior.
 extern bool g_sparse_cast_f32;  // defined in sparse.cpp        (TRELLIS_F32)
 extern bool g_no_fa;            // defined in dit.cpp           (TRELLIS_NOFA)
+extern int  g_fa_fast;          // defined in dit.cpp: -1 auto/env, 0 BF16/F32, 1 F16/fast
 extern bool g_require_gpu;      // defined in trellis_model.cpp (TRELLIS_REQUIRE_GPU)
 extern int  g_cpu_threads;      // defined in trellis_model.cpp (TRELLIS_THREADS)
+extern std::string g_backend;   // defined in trellis_model.cpp (TRELLIS_BACKEND)
 
 // Which family of flow weights the GGUF directory holds. Both share the TRELLIS.2 DiT,
 // sampler and decoders; they differ only in how the image conditions the flow — see pixal3d.h.
@@ -33,6 +35,11 @@ struct TrellisParams {
     std::string host   = "127.0.0.1";                           // trellis-server only
     int      port = 8080;                                       // trellis-server only
     int      gpu  = 0;                                          // >=0 GPU index, <0 CPU
+    std::string backend;        // force a ggml backend by name ("Vulkan", "HTP",
+                                // "CPU", ...); empty = auto-select. --gpu N then indexes
+                                // within that backend's devices.
+    int threads = 0;            // CPU backend thread count; 0 = auto (all cores).
+                                // ggml's own default is GGML_DEFAULT_N_THREADS == 4.
     uint32_t seed = 0;
 
     ModelFamily family = ModelFamily::Trellis;   // --model trellis|pixal3d
@@ -77,8 +84,8 @@ struct TrellisParams {
     int  webp     = -1;         // GLB texture encoding: -1 auto (WebP if built with it), 1 on, 0 off (PNG)
     bool f32      = false;      // f32 sparse-conv compute
     bool no_fa    = false;      // disable FlashAttention (manual softmax)
+    int  fa_fast  = -1;         // FA precision: -1 auto (fast on HTP), 0 BF16/F32, 1 F16/fast
     bool require_gpu = false;   // refuse CPU fallback if no GPU is usable
-    int  threads  = 0;          // CPU backend thread count; 0 = all cores
     float gss = 7.5f;           // sparse-structure guidance strength
     float gsh = 7.5f;           // shape-SLAT guidance strength
     bool voxply = false;        // dump out/myvox.ply              (debug)
@@ -92,6 +99,17 @@ struct TrellisParams {
                                 // same layout as the TRELLIS_DUMP_POST debug env)
     bool bg_only = false;       // background removal only: write the cutout and skip the rest
 
+    int  steps    = 0;          // flow sampler steps; 0 = model default (12). Lowering this
+                                //   trades output quality for turnaround and is meant for
+                                //   backend bring-up: a CPU and an NPU run at the same low
+                                //   step count are still directly comparable to each other.
+    int  sched = -1;            // multi-backend scheduler: -1 auto (on unless the primary
+                                // backend is the CPU), 0 off, 1 on. Required for partial
+                                // op-coverage accelerators like the Hexagon NPU.
+    int  vulkan_fallback = -1;   // add Vulkan between HTP and CPU: -1 environment/default,
+                                // 0 disabled, 1 enabled
+    bool verbose = false;       // --verbose: per-stage timings, graph shapes, and a
+                                // heartbeat while a backend compute is in flight
     bool help = false;          // --help requested
 
     // 512 -> light single-res path; 1024/1536 -> cascade with that HR target.
