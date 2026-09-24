@@ -130,8 +130,8 @@ The most useful ones:
 
 ### Pixal3D
 
-`--model pixal3d` runs [TencentARC/Pixal3D](https://github.com/TencentARC/Pixal3D) on the
-same engine. Pixal3D is a TRELLIS.2 fine-tune that replaces cross-attention over the DINOv3
+Available starting with v0.7.0. `--model pixal3d` runs
+[TencentARC/Pixal3D](https://github.com/TencentARC/Pixal3D) on the same engine. Pixal3D is a TRELLIS.2 fine-tune that replaces cross-attention over the DINOv3
 patch tokens with **pixel-aligned projection conditioning**: each DiT token is a grid cell,
 projected into the image and sampled there. The samplers, decoders, remesh and bake are
 shared, so the integration is a conditioning module plus one branch inside the DiT block.
