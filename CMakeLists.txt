@@ -333,6 +333,14 @@ if(TARGET ggml-hip)
   if(NOT CMAKE_HIP_ARCHITECTURES)
     set(CMAKE_HIP_ARCHITECTURES "${TRELLIS_HIP_ARCH}")
   endif()
+  # Targets created before HIP was enabled also link trellis_core's HIP objects.
+  get_property(TRELLIS_EARLY_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(TRELLIS_EARLY_TARGET IN LISTS TRELLIS_EARLY_TARGETS)
+    get_target_property(TRELLIS_EARLY_TYPE ${TRELLIS_EARLY_TARGET} TYPE)
+    if(TRELLIS_EARLY_TYPE STREQUAL "EXECUTABLE")
+      set_target_properties(${TRELLIS_EARLY_TARGET} PROPERTIES HIP_ARCHITECTURES "${TRELLIS_HIP_ARCH}")
+    endif()
+  endforeach()
   # Both the QEM decimation kernel and BiRefNet's deformable conv (issue #20) build
   # as HIP so ROCm users get GPU BiRefNet instead of the minutes-long CPU fallback.
   set_source_files_properties(src/decimate_qem.cu src/deform_conv.cu PROPERTIES LANGUAGE HIP)
