@@ -81,6 +81,10 @@ jobs:
           PY
           grep -n "XEFA" "$f" | head -3
 
+      - name: Instrument the Intel Xe FA gate
+        shell: bash
+        run: python3 ci/instrument_xefa.py
+
       - name: Configure & build
         shell: bash
         run: |
