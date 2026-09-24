@@ -110,6 +110,16 @@ struct TrellisParams {
                                 // 0 disabled, 1 enabled
     bool verbose = false;       // --verbose: per-stage timings, graph shapes, and a
                                 // heartbeat while a backend compute is in flight
+
+    bool retopo = false;
+    int retopo_grid = 0;
+    int retopo_first_faces = 0;
+    int retopo_final_faces = 0;
+    int retopo_atlas = 4096;
+    bool retopo_no_weld_fill = false;
+    bool retopo_dual_pbr = false;
+    std::string retopo_workdir = ".codex/retopo/runs";
+
     bool help = false;          // --help requested
 
     // 512 -> light single-res path; 1024/1536 -> cascade with that HR target.

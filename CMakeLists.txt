@@ -104,16 +104,93 @@ add_library(trellis_core STATIC
   src/dual_grid.cpp
   src/preprocess.cpp
   src/uv_bake.cpp
+  src/uv_overlap_cover.cpp
   src/birefnet.cpp
   thirdparty/xatlas/xatlas.cpp
   thirdparty/meshoptimizer/simplifier.cpp
   src/tri_bvh.cpp
   src/remesh_dc.cpp
   src/decimate_qem.cpp
+  src/mesh_shape.cpp
+  src/quad_refinement.cpp
+  src/quad_refinement_gates.cpp
+  src/quad_refinement_io.cpp
+  src/quad_components.cpp
+  src/quad_topology.cpp
+  src/quad_component_cover.cpp
 )
 target_include_directories(trellis_core PUBLIC include ${GGML_DIR}/include ${CMAKE_SOURCE_DIR}/thirdparty/stb ${CMAKE_SOURCE_DIR}/thirdparty/xatlas ${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer ${CMAKE_SOURCE_DIR}/thirdparty/fqms)
 target_compile_definitions(trellis_core PRIVATE TRELLIS_GIT_COMMIT="${TRELLIS_GIT_COMMIT}" TRELLIS_GIT_DIRTY=${TRELLIS_GIT_DIRTY} TRELLIS_BUILD_TIMESTAMP="${TRELLIS_BUILD_TIMESTAMP_UTC}" TRELLIS_APP_VERSION="${TRELLIS_APP_VERSION}")
 target_link_libraries(trellis_core PUBLIC ggml ggml-base ggml-cpu)
+
+add_executable(trellis-refine-core tools/mesh_quad_matching/selective_refinement_core.cpp)
+target_link_libraries(trellis-refine-core PRIVATE trellis_core)
+add_executable(trellis-chart-quads tools/mesh_quad_matching/chart_quad_uv.cpp)
+target_link_libraries(trellis-chart-quads PRIVATE trellis_core)
+add_executable(trellis-repack-uv tools/mesh_quad_matching/repack_uv.cpp)
+target_link_libraries(trellis-repack-uv PRIVATE trellis_core)
+add_executable(trellis-audit-quad-uv tools/mesh_quad_matching/audit_quad_uv_core.cpp)
+target_link_libraries(trellis-audit-quad-uv PRIVATE trellis_core)
+add_executable(trellis-bake-quads tools/mesh_quad_matching/bake_current_quad_probe.cpp)
+target_link_libraries(trellis-bake-quads PRIVATE trellis_core)
+add_executable(trellis-audit-bake-fidelity tools/mesh_quad_matching/audit_bake_fidelity.cpp)
+target_link_libraries(trellis-audit-bake-fidelity PRIVATE trellis_core)
+add_executable(trellis-select-uv-overlap-cover tools/mesh_quad_matching/select_uv_overlap_cover.cpp)
+target_link_libraries(trellis-select-uv-overlap-cover PRIVATE trellis_core)
+add_executable(trellis-filter-quads tools/mesh_quad_matching/filter_quad_components_core.cpp)
+target_link_libraries(trellis-filter-quads PRIVATE trellis_core)
+add_executable(trellis-test-quad-component-cover src/test_quad_component_cover.cpp)
+target_link_libraries(trellis-test-quad-component-cover PRIVATE trellis_core)
+add_executable(trellis-audit-quad-topology tools/mesh_quad_matching/audit_quad_topology.cpp)
+target_link_libraries(trellis-audit-quad-topology PRIVATE trellis_core)
+add_executable(trellis-test-quad-topology src/test_quad_topology.cpp)
+target_link_libraries(trellis-test-quad-topology PRIVATE trellis_core)
+
+option(TRELLIS_RETOPO_MATCHING "Build the native quad-matching stage" OFF)
+if(TRELLIS_RETOPO_MATCHING)
+  set(TRELLIS_LEMON_SOURCE "" CACHE PATH "LEMON source directory")
+  set(TRELLIS_LEMON_BUILD "" CACHE PATH "Configured LEMON build directory")
+  set(TRELLIS_LEMON_LIBRARY "" CACHE FILEPATH "LEMON static library")
+  if(NOT EXISTS "${TRELLIS_LEMON_SOURCE}/lemon/matching.h" OR
+     NOT EXISTS "${TRELLIS_LEMON_BUILD}/lemon/config.h" OR
+     NOT EXISTS "${TRELLIS_LEMON_LIBRARY}")
+    message(FATAL_ERROR "TRELLIS_RETOPO_MATCHING requires LEMON source, build, and library paths")
+  endif()
+  add_library(trellis_quad_matching STATIC src/quad_matching.cpp)
+  target_include_directories(trellis_quad_matching PUBLIC include PRIVATE
+    "${TRELLIS_LEMON_SOURCE}" "${TRELLIS_LEMON_BUILD}")
+  target_compile_definitions(trellis_quad_matching PUBLIC TRELLIS_HAVE_QUAD_MATCHING)
+  target_link_libraries(trellis_quad_matching PUBLIC "${TRELLIS_LEMON_LIBRARY}")
+  option(TRELLIS_RETOPO_COLLISION "Build the exact collision-safe quad matcher" OFF)
+  if(TRELLIS_RETOPO_COLLISION)
+    set(TRELLIS_CGAL_PREFIX "" CACHE PATH "CGAL development prefix")
+    if(NOT EXISTS "${TRELLIS_CGAL_PREFIX}/include/CGAL/Polygon_mesh_processing/self_intersections.h")
+      message(FATAL_ERROR "TRELLIS_RETOPO_COLLISION requires TRELLIS_CGAL_PREFIX")
+    endif()
+    target_sources(trellis_quad_matching PRIVATE src/quad_collision.cpp src/quad_local_repair.cpp)
+    target_include_directories(trellis_quad_matching PRIVATE "${TRELLIS_CGAL_PREFIX}/include")
+    find_library(TRELLIS_MPFR_LIBRARY NAMES mpfr
+      PATHS "${TRELLIS_CGAL_PREFIX}" PATH_SUFFIXES lib lib64 "lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+    find_library(TRELLIS_GMP_LIBRARY NAMES gmp)
+    if(NOT TRELLIS_MPFR_LIBRARY OR NOT TRELLIS_GMP_LIBRARY)
+      message(FATAL_ERROR "TRELLIS_RETOPO_COLLISION requires MPFR and GMP development libraries")
+    endif()
+    target_link_libraries(trellis_quad_matching PUBLIC
+      "${TRELLIS_MPFR_LIBRARY}" "${TRELLIS_GMP_LIBRARY}")
+    target_compile_definitions(trellis_quad_matching PUBLIC TRELLIS_HAVE_QUAD_COLLISION)
+    add_executable(trellis-repair-core tools/mesh_quad_matching/local_quad_repair_core.cpp)
+    target_link_libraries(trellis-repair-core PRIVATE trellis_core)
+    add_executable(trellis-audit-uv tools/mesh_quad_matching/audit_uv.cpp)
+    target_include_directories(trellis-audit-uv PRIVATE "${TRELLIS_CGAL_PREFIX}/include")
+    target_link_libraries(trellis-audit-uv PRIVATE trellis_core
+      "${TRELLIS_MPFR_LIBRARY}" "${TRELLIS_GMP_LIBRARY}")
+    add_executable(trellis-retopo-atlas tools/mesh_quad_matching/retopo_atlas_pipeline.cpp)
+    target_link_libraries(trellis-retopo-atlas PRIVATE trellis_core)
+  endif()
+  target_link_libraries(trellis_core PUBLIC trellis_quad_matching)
+  add_executable(trellis-match-core tools/mesh_quad_matching/constrained_matching_core.cpp)
+  target_link_libraries(trellis-match-core PRIVATE trellis_quad_matching)
+endif()
 
 # --- WebP textures (reference-parity GLB export) ---------------------------
 # Optional lossy-WebP textures via EXT_texture_webp. The exporter only advertises
@@ -330,6 +407,25 @@ set_target_properties(trellis-test-ss-dec PROPERTIES BUILD_RPATH "${GGML_RPATH}"
 add_executable(trellis-test-slat-shape src/test_slat_shape.cpp)
 target_link_libraries(trellis-test-slat-shape PRIVATE trellis_core)
 set_target_properties(trellis-test-slat-shape PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
+add_executable(trellis-test-uv-chart-density src/test_uv_chart_density.cpp)
+target_include_directories(trellis-test-uv-chart-density PRIVATE include)
+
+add_executable(trellis-test-quad-quality src/test_quad_quality.cpp)
+target_include_directories(trellis-test-quad-quality PRIVATE include)
+
+add_executable(trellis-test-uv-normal-margin src/test_uv_normal_margin.cpp src/tri_bvh.cpp)
+target_include_directories(trellis-test-uv-normal-margin PRIVATE include)
+
+add_executable(trellis-test-voxel-pbr src/test_voxel_pbr.cpp src/tri_bvh.cpp)
+target_include_directories(trellis-test-voxel-pbr PRIVATE include)
+
+add_executable(trellis-test-uv-preset src/test_uv_preset.cpp)
+target_link_libraries(trellis-test-uv-preset PRIVATE trellis_core)
+set_target_properties(trellis-test-uv-preset PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
+add_executable(trellis-test-uv-overlap-cover src/test_uv_overlap_cover.cpp)
+target_link_libraries(trellis-test-uv-overlap-cover PRIVATE trellis_core)
 
 add_executable(trellis-test-dinov3 src/test_dinov3.cpp)
 target_link_libraries(trellis-test-dinov3 PRIVATE trellis_core)

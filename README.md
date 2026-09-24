@@ -107,6 +107,34 @@ scripted use.
 The default is the **1024 cascade** (LR `flow_512` → upsample → HR `flow_1024` →
 res-1024 decode, sharper geometry); `--res 512` selects the lighter res-512 path.
 All behavior is driven by CLI flags — run `trellis-cli --help` for the full list.
+
+For an optional all-quad textured export, configure with
+`TRELLIS_RETOPO_MATCHING=ON` and `TRELLIS_RETOPO_COLLISION=ON`. This build needs
+LEMON 1.3.1 (`TRELLIS_LEMON_SOURCE`, `TRELLIS_LEMON_BUILD`, and
+`TRELLIS_LEMON_LIBRARY`) and CGAL with MPFR/GMP (`TRELLIS_CGAL_PREFIX`). Build
+`trellis-cli` and `trellis-retopo-atlas` together, then run, for example:
+
+```bash
+mkdir -p .codex/retopo/runs
+TMPDIR="$PWD/.codex/retopo/runs" ./build/trellis-cli assets/goblin.png out/goblin-quads.glb \
+  --models /path/to/gguf --seed 42 --res 1024 --tex-res 512 \
+  --retopo 512 0 900000 --retopo-no-weld-fill --retopo-dual-pbr \
+  --retopo-atlas 4096 --retopo-workdir .codex/retopo/runs
+```
+
+The three `--retopo` numbers select the tetra remesh grid, initial QEM face
+target (zero preserves the full shell), and final QEM face target. This
+configuration passed a full Vulkan goblin run; a thin-feature humanoid passed
+with the same 512-grid, no-weld preparation. `--retopo-dual-pbr` requires
+`--res 1024 --tex-res 512`: it decodes a 1024-resolution PBR field for the
+quad atlas when the 512 field leaves texture holes, at extra compute and
+storage cost. The raw POST, intermediate meshes, logs, and acceptance report
+stay in the unique run directory under `--retopo-workdir`. Keep that directory
+on disk (the tested `.codex/retopo` is backed by `/media/extssd`), not on a
+RAM-backed `/tmp`. The requested GLB is published only after the geometry,
+topology, source-cover, exact-UV, and bake gates pass. The standalone
+`trellis-retopo-atlas --from-post` command can resume from an existing POST
+without repeating image generation.
 The most useful ones:
 
 | flag | effect |
@@ -277,6 +305,7 @@ f16 tensor APIs are available from M2 on; on M1 use `TRELLIS_FA_FAST=1`
 | tool | purpose |
 |------|---------|
 | `post-replay <dump.bin> <out.glb>` | re-run the whole postprocess from a `TRELLIS_DUMP_POST` dump in seconds (flags: `--no-remesh`, `--band`, `--no-snap`, `--box-uv`, `--faces`, `--atlas`, …) |
+| `trellis-retopo-atlas --from-post SOURCE.post OUTPUT.glb GRID FIRST_FACES FINAL_FACES [ATLAS] [--no-weld-fill]` | optional native POST-to-textured-quad pipeline with geometry, topology, UV, and bake acceptance gates |
 | `tools/glb_metrics.py` | CPU geometry/UV/material metrics (components, boundary edges, winding, texel density, doubleSided/WebP flags) for ours-vs-reference GLB comparison |
 | `tools/render_glb.py` / `render_glb_fast.py` | quick multi-view flat renders |
 | `tools/mv_preview/` | PBR-correct GLB previews via the `<model-viewer>` web component (see its README) |

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <stdexcept>
 
 namespace trellis {
 
@@ -119,6 +120,11 @@ void print_usage(const char* argv0, bool server) {
         "                          exit (skips remesh/decimate/UV/bake/GLB) -- for external\n"
         "                          post-processing pipelines\n"
         "      --bg-only           background removal only: write the cutout and skip the rest\n"
+        "      --retopo GRID FIRST_FACES FINAL_FACES  native quad export (Linux, retopo build)\n"
+        "      --retopo-atlas PX   quad atlas size: 1024, 2048, 4096 (default 4096)\n"
+        "      --retopo-no-weld-fill  skip initial weld/fill before tetra remesh\n"
+        "      --retopo-dual-pbr  decode 1024 PBR for quad export with 512 primary PBR\n"
+        "      --retopo-workdir DIR   large intermediates (default .codex/retopo/runs)\n"
         "      --f32               f32 sparse-conv compute\n"
         "      --fa-fast           force F16 K/V + fast accumulation (default on HTP)\n"
         "      --fa-f32            use BF16 K/V + F32 accumulation (HTP opt-out)\n"
@@ -144,6 +150,18 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
         auto need = [&](const char* name) -> const char* {
             const char* v = next(name);
             return v;
+        };
+        auto integer = [&](const char* value, int& target) -> bool {
+            try {
+                size_t used=0;
+                const int parsed=std::stoi(value,&used);
+                if (used!=std::strlen(value)) throw std::invalid_argument("trailing characters");
+                target=parsed;
+                return true;
+            } catch (...) {
+                fprintf(stderr,"[trellis] invalid integer: %s\n",value);
+                return false;
+            }
         };
 
         if      (a == "-h" || a == "--help")    { p.help = true; return false; }
@@ -193,6 +211,17 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
                                                          : (std::strcmp(v,"on")==0 || std::strcmp(v,"1")==0 || std::strcmp(v,"true")==0) ? 1 : -1; }
         else if (a == "--dump-bg")              { p.dump_bg = true; }
         else if (a == "--bg-only")              { p.bg_only = true; p.dump_bg = true; }
+        else if (a == "--retopo")               { const char* g=need(a.c_str()); if (!g) return false;
+                                                  const char* f=need(a.c_str()); if (!f) return false;
+                                                  const char* q=need(a.c_str()); if (!q) return false;
+                                                  p.retopo=true;
+                                                  if (!integer(g,p.retopo_grid) || !integer(f,p.retopo_first_faces) ||
+                                                      !integer(q,p.retopo_final_faces)) return false; }
+        else if (a == "--retopo-atlas")         { const char* v=need(a.c_str()); if (!v) return false;
+                                                  if (!integer(v,p.retopo_atlas)) return false; }
+        else if (a == "--retopo-no-weld-fill")  { p.retopo_no_weld_fill=true; }
+        else if (a == "--retopo-dual-pbr")      { p.retopo_dual_pbr=true; }
+        else if (a == "--retopo-workdir")       { const char* v=need(a.c_str()); if (!v) return false; p.retopo_workdir=v; }
         else if (a == "--f32")                  { p.f32 = true; }
         else if (a == "--fa-fast")              { p.fa_fast = 1; }
         else if (a == "--fa-f32")               { p.fa_fast = 0; }
@@ -209,6 +238,22 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
         else if (positional == 0)               { p.image  = a; positional = 1; }
         else if (positional == 1)               { p.output = a; positional = 2; }
         else                                    { fprintf(stderr, "[trellis] unexpected argument: %s\n", a.c_str()); return false; }
+    }
+    if (p.retopo && ((p.retopo_grid!=512 && p.retopo_grid!=1024 && p.retopo_grid!=1536) ||
+                     p.retopo_first_faces<0 || p.retopo_final_faces<=0 ||
+                     (p.retopo_atlas!=1024 && p.retopo_atlas!=2048 && p.retopo_atlas!=4096) ||
+                     p.retopo_workdir.empty())) {
+        fprintf(stderr,"[trellis] invalid retopo settings\n");
+        return false;
+    }
+    if (!p.retopo && p.retopo_no_weld_fill) {
+        fprintf(stderr,"[trellis] --retopo-no-weld-fill requires --retopo\n");
+        return false;
+    }
+    if (p.retopo_dual_pbr && (!p.retopo || p.family != ModelFamily::Trellis ||
+                              !p.cascade || p.hr_res != 1024 || p.tex_res != 512)) {
+        fprintf(stderr,"[trellis] --retopo-dual-pbr requires --model trellis, --retopo, --res 1024, and --tex-res 512\n");
+        return false;
     }
     return true;
 }

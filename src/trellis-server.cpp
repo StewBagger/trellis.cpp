@@ -26,6 +26,7 @@
 #include <mutex>
 #include <utility>
 #include <string>
+#include <stdexcept>
 
 namespace {
 
@@ -43,11 +44,14 @@ bool write_file_bytes(const std::string& path, const std::string& data) {
 
 // std::tmpnam on MSVC yields drive-root paths ("\sXXX.N") that a non-elevated
 // process cannot write; stage scratch files in the real temp directory instead.
-std::string temp_stem() {
+std::string temp_stem(const std::string& workdir = {}) {
     static std::atomic<unsigned> counter{0};
     std::error_code ec;
-    std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+    std::filesystem::path dir = workdir.empty() ? std::filesystem::temp_directory_path(ec)
+                                                : std::filesystem::absolute(workdir);
     if (ec) dir = ".";
+    std::filesystem::create_directories(dir,ec);
+    if (ec) throw std::runtime_error("cannot create request workdir: " + ec.message());
     auto n = counter.fetch_add(1);
     return (dir / ("trellis-req-" + std::to_string(n))).string();
 }
@@ -128,7 +132,14 @@ int main(int argc, char** argv) {
                    : (w == "on"  || w == "1" || w == "true")  ? 1 : -1;
         }
 
-        const std::string stem = temp_stem();
+        std::string stem;
+        try {
+            stem = temp_stem(p.retopo ? p.retopo_workdir : std::string{});
+        } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content("{\"error\":\"failed to stage request files\"}", "application/json");
+            return;
+        }
         p.image  = stem + ".png";
         p.output = stem + ".glb";
 
