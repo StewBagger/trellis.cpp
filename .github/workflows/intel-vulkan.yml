@@ -52,35 +52,6 @@ jobs:
           ls -la thirdparty/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_decode_phase_2.comp
           grep -c xe_fa_supported_platform thirdparty/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 
-
-      - name: Instrument the Intel Xe FA gate
-        shell: bash
-        run: |
-          set -e
-          f=thirdparty/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-          grep -n "xe_fa_opt = xe_fa_supported_platform" "$f"
-          python3 - "$f" <<'PY'
-          import sys,re
-          fn=sys.argv[1]; s=open(fn,encoding="utf-8").read()
-          needle="        xe_fa_opt = xe_fa_supported_platform && xe_fa_supported_usage && xe_fa_supported_dtype;"
-          assert needle in s, "anchor not found"
-          dbg = needle + """
-        {
-            static int once = 0;
-            if (!once) { once = 1;
-              fprintf(stderr, "[XEFA] arch=%d devID=0x%X plat=%d usage=%d dtype=%d | neq0=%d nev0=%d mask=%d | qnb1=%zu qnb2=%zu knb1=%zu knb2=%zu vnb1=%zu vnb2=%zu | qt=%d kt=%d vt=%d mt=%d\\n",
-                (int)ctx->device.get()->architecture, (unsigned)ctx->device.get()->properties.deviceID,
-                (int)xe_fa_supported_platform, (int)xe_fa_supported_usage, (int)xe_fa_supported_dtype,
-                (int)neq0, (int)nev0, (int)(mask!=nullptr),
-                (size_t)q->nb[1], (size_t)q->nb[2], (size_t)k->nb[1], (size_t)k->nb[2], (size_t)v->nb[1], (size_t)v->nb[2],
-                (int)q->type, (int)k->type, (int)v->type, (int)(mask?mask->type:-1));
-            }
-        }"""
-          open(fn,"w",encoding="utf-8").write(s.replace(needle,dbg,1))
-          print("instrumented")
-          PY
-          grep -n "XEFA" "$f" | head -3
-
       - name: Instrument the Intel Xe FA gate
         shell: bash
         run: python3 ci/instrument_xefa.py
