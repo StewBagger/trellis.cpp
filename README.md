@@ -112,7 +112,8 @@ For an optional all-quad textured export, configure with
 `TRELLIS_RETOPO_MATCHING=ON` and `TRELLIS_RETOPO_COLLISION=ON`. This build needs
 LEMON 1.3.1 (`TRELLIS_LEMON_SOURCE`, `TRELLIS_LEMON_BUILD`, and
 `TRELLIS_LEMON_LIBRARY`) and CGAL with MPFR/GMP (`TRELLIS_CGAL_PREFIX`). Build
-`trellis-cli` and `trellis-retopo-atlas` together, then run, for example:
+`trellis-cli` and `trellis-retopo-atlas` together; the prebuilt release binaries
+do not include this optional Linux-only path. Then run, for example:
 
 ```bash
 mkdir -p .codex/retopo/runs
@@ -135,7 +136,8 @@ RAM-backed `/tmp`. The requested GLB is published only after the geometry,
 topology, source-cover, exact-UV, and bake gates pass. The standalone
 `trellis-retopo-atlas --from-post` command can resume from an existing POST
 without repeating image generation.
-The most useful ones:
+
+Other useful CLI flags:
 
 | flag | effect |
 |------|--------|
@@ -158,7 +160,7 @@ The most useful ones:
 
 ### Pixal3D
 
-Available starting with v0.7.0. `--model pixal3d` runs
+Available starting with v0.8.0. `--model pixal3d` runs
 [TencentARC/Pixal3D](https://github.com/TencentARC/Pixal3D) on the same engine. Pixal3D is a TRELLIS.2 fine-tune that replaces cross-attention over the DINOv3
 patch tokens with **pixel-aligned projection conditioning**: each DiT token is a grid cell,
 projected into the image and sampled there. The samplers, decoders, remesh and bake are
