@@ -1,4 +1,4 @@
 [submodule "thirdparty/ggml"]
 	path = thirdparty/ggml
-	url = https://github.com/pwilkin/ggml
-	branch = trellis
+	url = https://github.com/ggml-org/ggml.git
+	branch = master

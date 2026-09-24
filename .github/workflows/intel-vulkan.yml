@@ -1,0 +1,77 @@
+name: Intel Vulkan build
+
+# Windows + Vulkan only, uploaded as a plain artifact (no release needed).
+# Point of this branch: thirdparty/ggml is bumped from the pwilkin fork to
+# upstream ggml master, which carries llama.cpp PR #24406 -- Intel's Xe2
+# flash-attention kernels. The pinned fork predates that merge by 3 days.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: windows · vulkan
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: MSVC dev shell
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-vulkan-intel
+
+      - name: Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.309.0
+          install_runtime: true
+          cache: true
+
+      - name: SPIRV-Headers
+        shell: bash
+        run: |
+          set -e
+          git clone --depth 1 --branch vulkan-sdk-1.4.309.0 https://github.com/KhronosGroup/SPIRV-Headers \
+            || git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers
+          cmake -S SPIRV-Headers -B SPIRV-Headers/build -DCMAKE_INSTALL_PREFIX="$PWD/spirv-headers-install"
+          cmake --build SPIRV-Headers/build --target install --config Release
+          echo "SPIRV_HEADERS_ROOT=$(cygpath -m "$PWD/spirv-headers-install")" >> "$GITHUB_ENV"
+
+      - name: Confirm the Intel Xe FA kernels are present in the bumped ggml
+        shell: bash
+        run: |
+          set -e
+          ls -la thirdparty/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_decode_phase_1.comp
+          ls -la thirdparty/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_decode_phase_2.comp
+          grep -c xe_fa_supported_platform thirdparty/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+
+      - name: Configure & build
+        shell: bash
+        run: |
+          set -e
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_VULKAN=ON -DGGML_OPENMP=OFF \
+            ${SPIRV_HEADERS_ROOT:+-DCMAKE_PREFIX_PATH=$SPIRV_HEADERS_ROOT}
+          cmake --build build --target trellis-cli trellis-server -j
+
+      - name: Package
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist
+          cp build/trellis-cli.exe build/trellis-server.exe dist/
+          cp build/*.dll dist/ 2>/dev/null || true
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trellis-vulkan-windows-x64-intelfa
+          path: dist/
+          retention-days: 7
